@@ -26,6 +26,7 @@ from path import Path as path
 from edx2course_axis import date_parse
 import bqutil
 import gsutil
+import tempfile
 
 sfn = 'schema_forum.json'
 
@@ -112,7 +113,7 @@ def do_rephrase(data, do_schema_check=True, linecnt=0):
                 sys.stderr.write("[rephrase] oops, funny key at %s in entry: %s, data=%s\n" % (name, entry, ''))
                 funny_key_sections.append(name)
                 return True
-                
+
             if '-' in key or '.' in key:
                 # bad key name!  rename it, chaning "-" to "_"
                 newkey = key.replace('-','_').replace('.','__')
@@ -158,18 +159,18 @@ def do_rephrase_line(line, linecnt=0):
         sys.stderr.write('[%d] oops, err=%s, bad log line %s\n' % (linecnt, str(err), line))
         sys.stderr.write(traceback.format_exc())
         return
-            
+
     return json.dumps(data)+'\n'
 
 #-----------------------------------------------------------------------------
 
-def rephrase_forum_json_for_course(course_id, gsbucket="gs://x-data", 
-                                   basedir="X-Year-2-data-sql", 
-                                   datedir=None, 
+def rephrase_forum_json_for_course(course_id, gsbucket="gs://x-data",
+                                   basedir="X-Year-2-data-sql",
+                                   datedir=None,
                                    do_gs_copy=False,
                                    use_dataset_latest=False,
                                    ):
-    
+
     print "Loading SQL for course %s into BigQuery (start: %s)" % (course_id, datetime.datetime.now())
     sys.stdout.flush()
 
@@ -180,7 +181,7 @@ def rephrase_forum_json_for_course(course_id, gsbucket="gs://x-data",
 
     fn = 'forum.mongo'
     gsdir = gsutil.gs_path_from_course_id(course_id, gsbucket, use_dataset_latest)
-    
+
     def openfile(fn, mode='r'):
         if (not os.path.exists(lfp / fn)) and (not fn.endswith('.gz')):
             fn += ".gz"
@@ -193,6 +194,7 @@ def rephrase_forum_json_for_course(course_id, gsbucket="gs://x-data",
     ofn = lfp / "forum-rephrased.json.gz"
     ofncsv = "forum.csv.gz" # To match table name in BQ
     ofncsv_lfp = lfp / ofncsv
+    ofn_tmp = '%s_tmp.json.gz' % os.getpid()
 
     dataset = bqutil.course_id2dataset(course_id, use_dataset_latest=use_dataset_latest)
     bqutil.create_dataset_if_nonexistent(dataset)
@@ -216,7 +218,7 @@ def rephrase_forum_json_for_course(course_id, gsbucket="gs://x-data",
     ocsv.writeheader()
 
     cnt = 0
-    ofp = gzip.GzipFile('tmp.json.gz', 'w')
+    ofp = gzip.GzipFile(ofn_tmp, 'w')
     data = OrderedDict()
     for line in fp:
         cnt += 1
@@ -228,7 +230,7 @@ def rephrase_forum_json_for_course(course_id, gsbucket="gs://x-data",
             #Write CSV row
             data = json.loads(newline)
             ocsv.writerow( data )
-        except Exception as err: 
+        except Exception as err:
             print "Error writing CSV output row %s=%s" % ( cnt, data )
             raise
 
@@ -246,7 +248,7 @@ def rephrase_forum_json_for_course(course_id, gsbucket="gs://x-data",
 
     # do upload twice, because GSE file metadata doesn't always make it to BigQuery right away?
     gsfn = gsdir + '/' + "forum-rephrased.json.gz"
-    cmd = 'gsutil cp tmp.json.gz %s' % (gsfn)
+    cmd = 'gsutil cp %s %s' % (ofn_tmp, gsfn)
     os.system(cmd)
     os.system(cmd)
 
@@ -255,7 +257,7 @@ def rephrase_forum_json_for_course(course_id, gsbucket="gs://x-data",
     msg = "Original data from %s" % (lfp / fn)
     bqutil.add_description_to_table(dataset, table, msg, append=True)
 
-    os.system('mv tmp.json.gz "%s"' % (ofn))
+    os.system('mv %s "%s"' % (ofn_tmp, ofn))
 
     print "...done (%s)" % datetime.datetime.now()
     sys.stdout.flush()
